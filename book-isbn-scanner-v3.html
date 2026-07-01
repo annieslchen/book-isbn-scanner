@@ -1,0 +1,509 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>書本 ISBN 掃描器 v2：台灣國圖 / Google Sheet</title>
+  <style>
+    :root {
+      --bg: #f7f7f8;
+      --card: #ffffff;
+      --text: #1f2937;
+      --muted: #6b7280;
+      --line: #e5e7eb;
+      --accent: #111827;
+      --ok: #166534;
+      --warn: #92400e;
+      --bad: #991b1b;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: var(--bg); color: var(--text); }
+    header, main { max-width: 980px; margin: 0 auto; padding: 16px; }
+    h1 { font-size: 24px; margin: 12px 0 6px; }
+    h2 { font-size: 18px; margin: 0 0 12px; }
+    p { line-height: 1.55; }
+    .grid { display: grid; grid-template-columns: 1fr; gap: 14px; }
+    @media (min-width: 860px) { .grid { grid-template-columns: 1fr 1fr; } }
+    .card { background: var(--card); border: 1px solid var(--line); border-radius: 14px; padding: 14px; box-shadow: 0 1px 2px rgba(0,0,0,.04); }
+    label { display: block; font-size: 13px; color: var(--muted); margin: 10px 0 4px; }
+    input, textarea, select, button { width: 100%; font: inherit; }
+    input, textarea, select { border: 1px solid var(--line); border-radius: 10px; padding: 10px; background: #fff; }
+    textarea { min-height: 82px; }
+    button { border: 0; border-radius: 10px; padding: 11px 12px; background: var(--accent); color: #fff; font-weight: 650; cursor: pointer; }
+    button.secondary { background: #e5e7eb; color: #111827; }
+    button.danger { background: #991b1b; }
+    button:disabled { opacity: .55; cursor: not-allowed; }
+    .row { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+    .row3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; }
+    video { width: 100%; border-radius: 12px; background: #111; min-height: 260px; object-fit: cover; }
+    table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    th, td { border-bottom: 1px solid var(--line); padding: 9px 6px; text-align: left; vertical-align: top; }
+    th { color: var(--muted); font-weight: 650; }
+    .scroll { overflow-x: auto; }
+    .status { padding: 10px 12px; border-radius: 10px; background: #f3f4f6; color: #374151; min-height: 42px; }
+    .status.ok { background: #dcfce7; color: var(--ok); }
+    .status.warn { background: #fef3c7; color: var(--warn); }
+    .status.bad { background: #fee2e2; color: var(--bad); }
+    .small { color: var(--muted); font-size: 12px; line-height: 1.5; }
+    .pill { display: inline-block; border-radius: 999px; padding: 2px 8px; background: #eef2ff; margin: 2px; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>書本 ISBN 掃描器 v2</h1>
+    <p class="small">用手機瀏覽器打開本頁，掃書背後的 EAN-13 / ISBN 條碼。v2 會優先透過 Apps Script 查台灣國圖開放資料，再查 Google Books / Open Library，並可匯出 TXT/CSV 或送到 Google Sheet。</p>
+  </header>
+
+  <main class="grid">
+    <section class="card">
+      <h2>1. 掃描</h2>
+      <video id="preview" muted playsinline></video>
+      <div class="row" style="margin-top: 10px;">
+        <button id="startBtn">開始掃描</button>
+        <button id="stopBtn" class="secondary" disabled>停止</button>
+      </div>
+      <label for="manualIsbn">手動輸入 ISBN（掃不到時使用）</label>
+      <div class="row">
+        <input id="manualIsbn" placeholder="978... 或 ISBN-10" inputmode="numeric" />
+        <button id="manualBtn" class="secondary">新增</button>
+      </div>
+      <label for="notes">這本書的備註（選填，會寫入下一本掃描紀錄）</label>
+      <textarea id="notes" placeholder="例如：待讀、已讀、想複習、借來的書...\n掃完一本後會自動清空。"></textarea>
+      <p id="status" class="status">尚未開始。</p>
+      <p class="small">提示：相機通常需要 HTTPS 或 localhost；書本條碼常見是 978/979 開頭的 EAN-13。</p>
+    </section>
+
+    <section class="card">
+      <h2>2. Apps Script / Google Sheet 設定（建議填）</h2>
+      <label for="sheetUrl">Apps Script Web App URL（同時用於台灣國圖查詢與 Google Sheet 寫入）</label>
+      <input id="sheetUrl" placeholder="https://script.google.com/macros/s/.../exec" />
+      <label for="token">安全 token（要與 Code.gs 裡的 SECRET_TOKEN 相同）</label>
+      <input id="token" placeholder="例如 my-private-book-token" />
+      <label for="googleBooksKey">Google Books API key（選填；大量使用再填）</label>
+      <input id="googleBooksKey" placeholder="AIza..." />
+      <div class="row" style="margin-top: 10px;">
+        <button id="saveSettingsBtn" class="secondary">儲存設定</button>
+        <button id="testSheetBtn" class="secondary">送一筆測試</button>
+      </div>
+      <p class="small">若填入 Apps Script URL，查書時會先呼叫 Apps Script 後端查台灣國圖開放資料。每本書成功查到資料後，也會自動送出到 Google Sheet。寫入 Google Sheet 採 no-cors 送出，所以請以試算表是否新增列為準。</p>
+    </section>
+
+    <section class="card" style="grid-column: 1 / -1;">
+      <h2>3. 已掃描書籍</h2>
+      <div class="row3">
+        <button id="downloadTxtBtn" class="secondary">下載 TXT</button>
+        <button id="downloadCsvBtn" class="secondary">下載 CSV</button>
+        <button id="clearBtn" class="danger">清空本機紀錄</button>
+      </div>
+      <div class="scroll" style="margin-top: 12px;">
+        <table>
+          <thead>
+            <tr>
+              <th>#</th>
+              <th>書名</th>
+              <th>作者</th>
+              <th>出版年</th>
+              <th>ISBN</th>
+              <th>出版社</th>
+              <th>來源</th>
+              <th>備註</th>
+            </tr>
+          </thead>
+          <tbody id="recordsBody"></tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+
+  <script src="https://unpkg.com/@zxing/browser@latest"></script>
+  <script>
+    const els = {
+      preview: document.getElementById('preview'),
+      startBtn: document.getElementById('startBtn'),
+      stopBtn: document.getElementById('stopBtn'),
+      manualIsbn: document.getElementById('manualIsbn'),
+      manualBtn: document.getElementById('manualBtn'),
+      notes: document.getElementById('notes'),
+      status: document.getElementById('status'),
+      sheetUrl: document.getElementById('sheetUrl'),
+      token: document.getElementById('token'),
+      googleBooksKey: document.getElementById('googleBooksKey'),
+      saveSettingsBtn: document.getElementById('saveSettingsBtn'),
+      testSheetBtn: document.getElementById('testSheetBtn'),
+      downloadTxtBtn: document.getElementById('downloadTxtBtn'),
+      downloadCsvBtn: document.getElementById('downloadCsvBtn'),
+      clearBtn: document.getElementById('clearBtn'),
+      recordsBody: document.getElementById('recordsBody')
+    };
+
+    const STORE_RECORDS = 'bookScanner.records.v1';
+    const STORE_SETTINGS = 'bookScanner.settings.v1';
+    let records = loadJson(STORE_RECORDS, []);
+    let settings = loadJson(STORE_SETTINGS, { sheetUrl: '', token: '', googleBooksKey: '' });
+    let reader = null;
+    let scanControls = null;
+    let lastIsbn = '';
+    let lastScanTime = 0;
+    let isProcessing = false;
+
+    els.sheetUrl.value = settings.sheetUrl || '';
+    els.token.value = settings.token || '';
+    els.googleBooksKey.value = settings.googleBooksKey || '';
+    renderRecords();
+
+    function setStatus(message, kind = '') {
+      els.status.textContent = message;
+      els.status.className = 'status' + (kind ? ' ' + kind : '');
+    }
+
+    function loadJson(key, fallback) {
+      try {
+        const raw = localStorage.getItem(key);
+        return raw ? JSON.parse(raw) : fallback;
+      } catch (_e) {
+        return fallback;
+      }
+    }
+
+    function saveJson(key, value) {
+      localStorage.setItem(key, JSON.stringify(value));
+    }
+
+    function saveSettings() {
+      settings = {
+        sheetUrl: els.sheetUrl.value.trim(),
+        token: els.token.value.trim(),
+        googleBooksKey: els.googleBooksKey.value.trim()
+      };
+      saveJson(STORE_SETTINGS, settings);
+      setStatus('設定已儲存。', 'ok');
+    }
+
+    function normalizeIsbn(value) {
+      const stripped = String(value || '').replace(/[^0-9Xx]/g, '').toUpperCase();
+      if (stripped.length === 13 && /^(978|979)\d{10}$/.test(stripped) && validIsbn13(stripped)) return stripped;
+      if (stripped.length === 10 && validIsbn10(stripped)) return stripped;
+      return '';
+    }
+
+    function validIsbn13(isbn) {
+      const digits = isbn.split('').map(Number);
+      const sum = digits.slice(0, 12).reduce((acc, d, i) => acc + d * (i % 2 ? 3 : 1), 0);
+      const check = (10 - (sum % 10)) % 10;
+      return check === digits[12];
+    }
+
+    function validIsbn10(isbn) {
+      let sum = 0;
+      for (let i = 0; i < 10; i++) {
+        const c = isbn[i];
+        const v = c === 'X' ? 10 : Number(c);
+        if (Number.isNaN(v)) return false;
+        sum += v * (10 - i);
+      }
+      return sum % 11 === 0;
+    }
+
+    async function startScan() {
+      if (!window.ZXingBrowser) {
+        setStatus('ZXing 掃碼程式尚未載入。請確認網路可連到 unpkg CDN，或改用 HTTPS 網頁伺服器部署。', 'bad');
+        return;
+      }
+      try {
+        reader = new ZXingBrowser.BrowserMultiFormatReader();
+        const constraints = {
+          video: {
+            facingMode: { ideal: 'environment' },
+            width: { ideal: 1280 },
+            height: { ideal: 720 }
+          },
+          audio: false
+        };
+        els.startBtn.disabled = true;
+        els.stopBtn.disabled = false;
+        setStatus('掃描中。請把書背後的條碼放在畫面中央。');
+        scanControls = await reader.decodeFromConstraints(constraints, els.preview, async (result, error, controls) => {
+          if (!result || isProcessing) return;
+          const rawText = typeof result.getText === 'function' ? result.getText() : String(result.text || '');
+          const isbn = normalizeIsbn(rawText);
+          if (!isbn) return;
+          const now = Date.now();
+          if (isbn === lastIsbn && now - lastScanTime < 5000) return;
+          lastIsbn = isbn;
+          lastScanTime = now;
+          isProcessing = true;
+          try {
+            await addBookByIsbn(isbn, rawText, els.notes.value.trim());
+            els.notes.value = '';
+          } finally {
+            isProcessing = false;
+          }
+        });
+      } catch (err) {
+        els.startBtn.disabled = false;
+        els.stopBtn.disabled = true;
+        setStatus('無法啟動相機：' + errorMessage(err), 'bad');
+      }
+    }
+
+    function stopScan() {
+      if (scanControls && typeof scanControls.stop === 'function') scanControls.stop();
+      scanControls = null;
+      els.startBtn.disabled = false;
+      els.stopBtn.disabled = true;
+      setStatus('已停止掃描。');
+    }
+
+    async function addBookByIsbn(isbn, rawBarcode = isbn, notes = '') {
+      setStatus('查詢 ISBN：' + isbn + ' ...');
+      const book = await lookupBook(isbn);
+      const record = {
+        scannedAt: new Date().toISOString(),
+        title: book.title || '(查無書名)',
+        authors: book.authors || '',
+        year: book.year || '',
+        isbn,
+        publisher: book.publisher || '',
+        source: book.source || 'manual',
+        rawBarcode,
+        notes
+      };
+      records.push(record);
+      saveJson(STORE_RECORDS, records);
+      renderRecords();
+      setStatus('已新增：' + record.title, book.title ? 'ok' : 'warn');
+      if (settings.sheetUrl) await sendToGoogleSheet(record);
+    }
+
+    async function lookupBook(isbn) {
+      const taiwanNcl = await lookupTaiwanBackend(isbn).catch(() => null);
+      const google = await lookupGoogleBooks(isbn).catch(() => null);
+      const openLibrary = await lookupOpenLibrary(isbn).catch(() => null);
+
+      const merged = {
+        title: (taiwanNcl && taiwanNcl.title) || (google && google.title) || (openLibrary && openLibrary.title) || '',
+        authors: (taiwanNcl && taiwanNcl.authors) || (google && google.authors) || (openLibrary && openLibrary.authors) || '',
+        year: (taiwanNcl && taiwanNcl.year) || (google && google.year) || (openLibrary && openLibrary.year) || '',
+        publisher: (taiwanNcl && taiwanNcl.publisher) || (google && google.publisher) || (openLibrary && openLibrary.publisher) || '',
+        source: [
+          taiwanNcl ? taiwanNcl.source || 'Taiwan NCL Open Data' : '',
+          google ? 'Google Books' : '',
+          openLibrary ? 'Open Library' : ''
+        ].filter(Boolean).join(' + ')
+      };
+      return merged;
+    }
+
+    async function lookupTaiwanBackend(isbn) {
+      if (!settings.sheetUrl) return null;
+      const url = settings.sheetUrl
+        + '?action=lookup'
+        + '&isbn=' + encodeURIComponent(isbn)
+        + '&token=' + encodeURIComponent(settings.token || '');
+      const json = await fetchJsonp(url, 65000);
+      if (!json || !json.ok || !json.book || !json.book.title) return null;
+      return {
+        title: json.book.title || '',
+        authors: json.book.authors || '',
+        year: json.book.year || '',
+        publisher: json.book.publisher || '',
+        source: json.book.source || 'Taiwan NCL Open Data'
+      };
+    }
+
+    function fetchJsonp(baseUrl, timeoutMs = 30000) {
+      return new Promise((resolve, reject) => {
+        const callbackName = '__bookScannerJsonp_' + Date.now() + '_' + Math.random().toString(36).slice(2);
+        const script = document.createElement('script');
+        const separator = baseUrl.includes('?') ? '&' : '?';
+        const timer = setTimeout(() => {
+          cleanup();
+          reject(new Error('Apps Script 查詢逾時'));
+        }, timeoutMs);
+
+        function cleanup() {
+          clearTimeout(timer);
+          try { delete window[callbackName]; } catch (_e) { window[callbackName] = undefined; }
+          if (script.parentNode) script.parentNode.removeChild(script);
+        }
+
+        window[callbackName] = (data) => {
+          cleanup();
+          resolve(data);
+        };
+
+        script.onerror = () => {
+          cleanup();
+          reject(new Error('無法載入 Apps Script 查詢結果'));
+        };
+        script.src = baseUrl + separator + 'callback=' + encodeURIComponent(callbackName);
+        document.body.appendChild(script);
+      });
+    }
+
+    async function lookupGoogleBooks(isbn) {
+      const key = settings.googleBooksKey ? '&key=' + encodeURIComponent(settings.googleBooksKey) : '';
+      const url = 'https://www.googleapis.com/books/v1/volumes?q=isbn:' + encodeURIComponent(isbn) + key;
+      const json = await fetchJson(url);
+      if (!json.totalItems || !json.items || !json.items.length) return null;
+      const info = json.items[0].volumeInfo || {};
+      return {
+        title: info.title || '',
+        authors: Array.isArray(info.authors) ? info.authors.join(', ') : '',
+        year: parseYear(info.publishedDate),
+        publisher: info.publisher || '',
+        source: 'Google Books'
+      };
+    }
+
+    async function lookupOpenLibrary(isbn) {
+      const url = 'https://openlibrary.org/isbn/' + encodeURIComponent(isbn) + '.json';
+      const json = await fetchJson(url);
+      const authors = await resolveOpenLibraryAuthors(json.authors || []);
+      return {
+        title: json.title || '',
+        authors: authors.join(', '),
+        year: parseYear(json.publish_date),
+        publisher: Array.isArray(json.publishers) ? json.publishers.join(', ') : '',
+        source: 'Open Library'
+      };
+    }
+
+    async function resolveOpenLibraryAuthors(authorRefs) {
+      const refs = authorRefs.slice(0, 5).map(a => a && a.key).filter(Boolean);
+      const names = [];
+      for (const key of refs) {
+        try {
+          const author = await fetchJson('https://openlibrary.org' + key + '.json');
+          if (author.name) names.push(author.name);
+        } catch (_e) {}
+      }
+      return names;
+    }
+
+    async function fetchJson(url) {
+      const res = await fetch(url, { headers: { 'Accept': 'application/json' } });
+      if (!res.ok) throw new Error('HTTP ' + res.status);
+      return await res.json();
+    }
+
+    function parseYear(value) {
+      const match = String(value || '').match(/(1[5-9]\d{2}|20\d{2})/);
+      return match ? match[1] : '';
+    }
+
+    async function sendToGoogleSheet(record) {
+      if (!settings.sheetUrl) return;
+      const payload = { token: settings.token, ...record };
+      try {
+        await fetch(settings.sheetUrl, {
+          method: 'POST',
+          mode: 'no-cors',
+          headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+          body: JSON.stringify(payload)
+        });
+        setStatus('已新增：' + record.title + '；並已送出到 Google Sheet。請打開試算表確認新增列。', 'ok');
+      } catch (err) {
+        setStatus('本機已新增，但送 Google Sheet 失敗：' + errorMessage(err), 'warn');
+      }
+    }
+
+    function renderRecords() {
+      els.recordsBody.innerHTML = '';
+      records.forEach((r, i) => {
+        const tr = document.createElement('tr');
+        tr.innerHTML = [
+          i + 1,
+          escapeHtml(r.title),
+          escapeHtml(r.authors),
+          escapeHtml(r.year),
+          escapeHtml(r.isbn),
+          escapeHtml(r.publisher),
+          escapeHtml(r.source),
+          escapeHtml(r.notes)
+        ].map(v => '<td>' + v + '</td>').join('');
+        els.recordsBody.appendChild(tr);
+      });
+    }
+
+    function escapeHtml(value) {
+      return String(value == null ? '' : value).replace(/[&<>'"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' }[c]));
+    }
+
+    function toTxt() {
+      return records.map(r => [r.title, r.authors, r.year, r.isbn, r.publisher, r.notes].map(cleanCell).join('\t')).join('\n') + '\n';
+    }
+
+    function toCsv() {
+      const header = ['scanned_at', 'title', 'authors', 'published_year', 'isbn', 'publisher', 'source', 'raw_barcode', 'notes'];
+      const rows = records.map(r => [r.scannedAt, r.title, r.authors, r.year, r.isbn, r.publisher, r.source, r.rawBarcode, r.notes]);
+      return [header, ...rows].map(row => row.map(csvCell).join(',')).join('\n') + '\n';
+    }
+
+    function cleanCell(value) {
+      return String(value == null ? '' : value).replace(/[\r\n\t]+/g, ' ').trim();
+    }
+
+    function csvCell(value) {
+      const s = cleanCell(value);
+      return '"' + s.replace(/"/g, '""') + '"';
+    }
+
+    function download(filename, text, type) {
+      const blob = new Blob([text], { type: type + ';charset=utf-8' });
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+    }
+
+    function errorMessage(err) {
+      return err && err.message ? err.message : String(err);
+    }
+
+    els.startBtn.addEventListener('click', startScan);
+    els.stopBtn.addEventListener('click', stopScan);
+    els.saveSettingsBtn.addEventListener('click', saveSettings);
+    els.manualBtn.addEventListener('click', async () => {
+      const isbn = normalizeIsbn(els.manualIsbn.value);
+      if (!isbn) {
+        setStatus('ISBN 格式或檢查碼不正確。', 'bad');
+        return;
+      }
+      await addBookByIsbn(isbn, isbn, els.notes.value.trim());
+      els.manualIsbn.value = '';
+      els.notes.value = '';
+    });
+    els.downloadTxtBtn.addEventListener('click', () => download('books.txt', toTxt(), 'text/plain'));
+    els.downloadCsvBtn.addEventListener('click', () => download('books.csv', toCsv(), 'text/csv'));
+    els.clearBtn.addEventListener('click', () => {
+      if (!confirm('確定清空本機掃描紀錄？Google Sheet 內已寫入的資料不會刪除。')) return;
+      records = [];
+      saveJson(STORE_RECORDS, records);
+      renderRecords();
+      setStatus('本機紀錄已清空。');
+    });
+    els.testSheetBtn.addEventListener('click', async () => {
+      saveSettings();
+      if (!settings.sheetUrl) {
+        setStatus('請先填入 Apps Script Web App URL。', 'bad');
+        return;
+      }
+      await sendToGoogleSheet({
+        scannedAt: new Date().toISOString(),
+        title: '測試書名',
+        authors: '測試作者',
+        year: '2026',
+        isbn: '9780000000002',
+        publisher: '測試出版社',
+        source: 'test',
+        rawBarcode: '9780000000002',
+        notes: '這是測試列，可刪除'
+      });
+    });
+  </script>
+</body>
+</html>
